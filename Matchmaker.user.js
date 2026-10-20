@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.0.0
+// @version 1.0.1
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
