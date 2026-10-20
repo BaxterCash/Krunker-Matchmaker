@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.0.2
+// @version 1.0.3
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
@@ -17,7 +17,7 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
-    const VERSION = '1.0.2';
+    const VERSION = '1.0.3';
     const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
@@ -25,7 +25,7 @@
     const SEARCH_COOLDOWN = 500;
     const NOTICE_DURATION = 3000;
     const LIMIT = 24;
-    const defaults = { kind: 'public', minPlayers: 1, maxPlayers: '', minTime: 0, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 3, hideButton: false };
+    const defaults = { kind: 'public', minPlayers: 1, maxPlayers: '', minTime: 0, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 3, searchDuration: 5, hideButton: false };
     // Exact mode IDs read from Krunker's host menu; IDs are not consecutive.
     const modeNames = new Map([[0,"Free for All"],[1,"Team Deathmatch"],[2,"Hardpoint"],[3,"Capture the Flag"],[4,"Parkour"],[5,"Hide & Seek"],[6,"Infected"],[7,"Race"],[8,"Last Man Standing"],[9,"Simon Says"],[10,"Gun Game"],[11,"Prop Hunt"],[12,"Boss Hunt"],[13,"Classic FFA"],[14,"Deposit"],[15,"Stalker"],[16,"King of the Hill"],[17,"One in the Chamber"],[18,"Trade"],[19,"Kill Confirmed"],[20,"Defuse"],[21,"Sharp Shooter"],[22,"Traitor"],[23,"Raid"],[24,"Blitz"],[25,"Domination"],[26,"Squad Deathmatch"],[27,"Kranked FFA"],[28,"Team Defender"],[29,"Deposit FFA"],[33,"Chaos Snipers"],[34,"Bighead FFA"],[35,"Zombies"]]);
     const regionNames = new Map([["de-fra","Frankfurt"],["us-ca-sv","Silicon Valley"],["au-syd","Sydney"],["jb-hnd","Tokyo"],["sgp","Singapore"],["us-nj","New York"],["as-mb","Mumbai"],["us-tx","Dallas"],["brz","Brazil"],["me-bhn","Middle East"],["sss","Super Secret Servers"]]);
@@ -76,18 +76,25 @@
         if (!/^\d+$/.test(String(settings[key])) || Number(settings[key]) > 100000) settings[key] = defaults[key];
     }
     if (settings.maxPlayers !== '' && Number(settings.maxPlayers) < Number(settings.minPlayers)) settings.maxPlayers = '';
-    for (const [key, min, max] of [['messageSize', 10, 40], ['messageDuration', 1, 30]]) {
+    for (const [key, min, max] of [['messageSize', 10, 40], ['messageDuration', 1, 30], ['searchDuration', 1, 30]]) {
         if (!Number.isInteger(Number(settings[key])) || Number(settings[key]) < min || Number(settings[key]) > max) settings[key] = defaults[key];
     }
 
     let root, host, panel, trigger, status, list, summary, form, timer, previousFocus, notice, noticeTimer;
     let opened = false, operation = null, generation = 0, busy = '', games = [], fetchedAt = 0, lastSearch = -Infinity;
+    let searchAnimation, searchDeadlineTimer;
     let visibleLimit = LIMIT;
     let navigating = false, confirmationTimer, updateTimer, ready = false, pendingMenuToggle = false;
     let invalidRows = 0, recordingKey = false;
     const controls = {};
     const abortError = () => new DOMException('Cancelled', 'AbortError');
-    const currentId = () => new URL(location.href).searchParams.get('game');
+    const currentActivity = () => {
+        try { return typeof window.getGameActivity === 'function' ? window.getGameActivity() : null; } catch { return null; }
+    };
+    const currentId = () => {
+        const activity = currentActivity();
+        return validId(activity?.id) ? activity.id : new URL(location.href).searchParams.get('game');
+    };
     const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,24}:[a-zA-Z0-9_-]{1,80}$/.test(id);
     const number = value => typeof value === 'number' && Number.isFinite(value);
     const flag = value => value === 1 || value === true || value === '1' || value === 'true';
@@ -245,7 +252,7 @@
         // Use its displayed value solely as a clearly labelled estimate for that region.
         const text = document.querySelector('#menuPingText')?.innerText || '';
         const value = /^\s*(\d+(?:\.\d+)?)\s*(?:ms)?\s*$/i.exec(text);
-        if (current && value && Number(value[1]) > 0 && Number(value[1]) < 10000) {
+        if (current && typeof current.region === 'string' && value && Number(value[1]) > 0 && Number(value[1]) < 10000) {
             regionPings.set(current.region, { ms: Number(value[1]), sampled: Date.now() });
         }
         const samples = [...regionPings].filter(([, ping]) => Date.now() - ping.sampled < 60000);
@@ -295,7 +302,7 @@
     function setStatus(message, error = false) {
         status.textContent = error ? message : '';
         status.dataset.error = String(error);
-        if (busy === 'quick') showNotice(error ? 'NO LOBBY AVAILABLE' : 'SWITCHING', error);
+        if (busy === 'quick' && error) { stopSearchUI(); showNotice('NO LOBBY AVAILABLE', true); }
     }
     function noticeDuration() { return Number(settings.messageDuration) * 1000 || NOTICE_DURATION; }
     function showNotice(title, error = false, duration = noticeDuration(), success = false) {
@@ -315,6 +322,7 @@
         try { sessionStorage.setItem('glorp_matchmaker_notice_v1', JSON.stringify({ version: 2, info, id: game.id, until: Date.now() + noticeDuration() })); } catch { /* optional visual continuity */ }
     }
     async function navigateTo(game, job) {
+        stopSearchUI();
         navigating = true;
         switchingTo(game);
         // Let the verified green notice paint before leaving; abort never schedules another join.
@@ -345,9 +353,9 @@
             result[key] = Number(result[key]);
         }
         if (result.minPlayers > result.maxPlayers) throw new Error('Minimum players cannot exceed maximum players.');
-        for (const [key, min, max] of [['messageSize', 10, 40], ['messageDuration', 1, 30]]) {
+        for (const [key, min, max] of [['messageSize', 10, 40], ['messageDuration', 1, 30], ['searchDuration', 1, 30]]) {
             result[key] = Number(result[key]);
-            if (!Number.isInteger(result[key]) || result[key] < min || result[key] > max) throw new Error(`${key === 'messageSize' ? 'Message size' : 'Message duration'} must be ${min}–${max}.`);
+            if (!Number.isInteger(result[key]) || result[key] < min || result[key] > max) throw new Error(`${key === 'messageSize' ? 'Message size' : key === 'searchDuration' ? 'Search duration' : 'Message duration'} must be ${min}–${max}.`);
         }
         return result;
     }
@@ -356,7 +364,31 @@
         try { localStorage.setItem(KEY, JSON.stringify({ version: 3, filters: { ...settings, noticeTimingVersion: 2, maps: selections.maps, modes: selections.modes, regions: selections.regions } })); storageOK = true; }
         catch { storageOK = false; }
     }
+    function stopSearchUI() { clearInterval(searchAnimation); clearTimeout(searchDeadlineTimer); }
+    function searchWait(ms, signal) {
+        return new Promise(resolve => {
+            const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+            const timer = setTimeout(done, ms);
+            signal.addEventListener('abort', done, { once: true });
+            if (signal.aborted) done();
+        });
+    }
+    function beginSearchUI(job, seconds) {
+        job.deadline = Date.now() + seconds * 1000;
+        job.checkedIds = new Set();
+        let dots = 0;
+        showNotice('SEARCHING'); clearTimeout(noticeTimer);
+        searchAnimation = setInterval(() => {
+            if (active(job)) notice.querySelector('strong').textContent = 'SEARCHING' + '.'.repeat(dots = (dots + 1) % 4);
+        }, 350);
+        searchDeadlineTimer = setTimeout(() => {
+            if (!active(job)) return;
+            cancel(); showNotice('NO LOBBY AVAILABLE', true); render();
+        }, seconds * 1000);
+    }
     function cancel() {
+        if (busy === 'quick') { lastSearch = Date.now(); hideNotice(); }
+        stopSearchUI();
         clearInterval(confirmationTimer);
         generation++;
         operation?.abort();
@@ -374,6 +406,7 @@
     function active(job) { return (opened || job.background) && generation === job.token && !job.signal.aborted; }
     function finish(job) {
         if (!active(job)) return;
+        stopSearchUI();
         operation = null;
         busy = '';
         panel.removeAttribute('aria-busy');
@@ -471,7 +504,8 @@
             list.append(empty);
         }
         controls.refresh.disabled = busy === 'join' || busy === 'quick';
-        controls.quick.disabled = !!busy;
+        controls.quick.disabled = !!busy && busy !== 'quick';
+        syncShortcut();
         controls.clearFilters.disabled = busy === 'join' || busy === 'quick';
         controls.reset.disabled = busy === 'join' || busy === 'quick';
         controls.bind.disabled = busy === 'join' || busy === 'quick';
@@ -491,11 +525,13 @@
         save();
         lastSearch = Date.now();
         const job = start(quick ? 'quick' : 'search');
+        if (quick) beginSearchUI(job, selected.searchDuration);
         games = []; fetchedAt = 0; visibleLimit = LIMIT;
         render();
         setStatus('Loading Krunker lobbies…');
-        const started = Date.now();
         try {
+          do {
+            const started = Date.now();
             const payload = await request('game-list?hostname=krunker.io', job.signal);
             if (!active(job)) return;
             if (!payload || !Array.isArray(payload.games)) throw new Error('Krunker changed its lobby-list format. No join attempted.');
@@ -508,9 +544,13 @@
             if (payload.games.length && !unique.size) throw new Error('No readable lobbies in the response. Krunker may have changed its API.');
             games = [...unique.values()]; fetchedAt = started;
             let current = games.find(game => game.id === currentId());
+            const activity = currentActivity();
+            if (!current?.map && activity?.id === currentId() && typeof activity.map === 'string' && activity.map) {
+                current = { id: activity.id, map: activity.map };
+            }
             // The cached list can omit the connected lobby. Recover its metadata
             // directly rather than guessing its map or weakening the restriction.
-            if ((!current || !current.map) && ((quick && selected.differentMap) || selected.maxPing > 0) && validId(currentId())) {
+            if ((!current || !current.map || (selected.maxPing > 0 && !current.region)) && ((quick && selected.differentMap) || selected.maxPing > 0) && validId(currentId())) {
                 const id = currentId();
                 const detail = parseGame(await request(`game-info?game=${encodeURIComponent(id)}`, job.signal));
                 if (!active(job)) return;
@@ -518,7 +558,12 @@
             }
             sampleRegionPing(current);
             updateChoices();
-            if (quick) { await quickJoin(selected, job, current); return; }
+            if (quick) {
+                if (await quickJoin(selected, job, current)) return;
+                await searchWait(Math.max(1, Math.min(1000, job.deadline - Date.now())), job.signal);
+                if (!active(job)) return;
+                continue;
+            }
             const absentRegion = selected.regions.length && !games.some(g => selected.regions.includes(g.region));
             setStatus([
                 'Ready. Choose a lobby to check and join.',
@@ -526,6 +571,9 @@
                 invalidRows ? `Skipped ${invalidRows} invalid entries.` : '',
                 !storageOK ? 'Settings could not be saved in this client.' : ''
             ].filter(Boolean).join(' '));
+            return;
+          } while (quick && active(job) && Date.now() < job.deadline);
+          if (active(job)) setStatus('No matching lobby found.', true);
         } catch (error) {
             if (active(job)) setStatus(error.message || 'Search failed. Try again.', true);
         } finally { finish(job); }
@@ -533,24 +581,24 @@
     async function quickJoin(selected, job, current) {
         const map = current?.map;
         if (selected.differentMap && !map) throw new Error('Current map is unknown. Refresh later or turn off Different map only.');
-        const candidates = games.filter(game => matches(game, selected, fetchedAt) && (!selected.differentMap || game.map !== map))
-            .sort((a, b) => b.players - a.players || (b.seconds || 0) - (a.seconds || 0));
-        if (!candidates.length) throw new Error('No other lobby matches your maps, modes, player/time limits and measured ping limit.');
-        for (const game of candidates.slice(0, 1)) {
+        const candidates = games.filter(game => !job.checkedIds.has(game.id) && matches(game, selected, fetchedAt) && (!selected.differentMap || game.map !== map))
+            .sort((a, b) => (b.capacity - b.players) - (a.capacity - a.players) || b.players - a.players);
+        if (!candidates.length) return false;
+        for (const game of candidates.slice(0, 3)) {
             if (!active(job)) return;
-            setStatus(`Quick switch: checking ${game.map || 'lobby'}… F2 or Esc cancels.`);
+            job.checkedIds.add(game.id);
             const started = Date.now();
             const fresh = parseGame(await request(`game-info?game=${encodeURIComponent(game.id)}`, job.signal));
             if (!active(job)) return;
-            if (!fresh || fresh.id !== game.id || !matches(fresh, selected, started) || (selected.differentMap && fresh.map === map)) throw new Error('Lobby is full or unavailable.');
+            if (!fresh || fresh.id !== game.id || !matches(fresh, selected, started) || (selected.differentMap && fresh.map === map)) continue;
             await navigateTo(fresh, job);
-            return;
+            return true;
         }
-        throw new Error('The checked lobbies filled up or changed. Refresh or change your filters.');
+        return false;
     }
     function quickSwitch() {
-        if (navigating) return;
-        if (busy) { if (busy === 'quick') { cancel(); hideNotice(); render(); setStatus('Quick switch cancelled.'); } return; }
+        if (busy === 'quick') { cancel(); render(); return; }
+        if (navigating || busy) return;
         if (opened) close();
         refresh(true);
     }
@@ -625,7 +673,7 @@
     function syncShortcut() {
         const label = controls.switchKey.value.replace(/Key|Digit/g, '') || 'Off';
         controls.bind.textContent = recordingKey ? 'Press a shortcut…' : label;
-        controls.quick.textContent = `Switch lobby${label === 'Off' ? '' : ` · ${label}`}`;
+        controls.quick.textContent = `${busy === 'quick' ? 'Cancel search' : 'Search lobbies'}${label === 'Off' ? '' : ` · ${label}`}`;
     }
     function syncSliders() {
         for (const slider of root.querySelectorAll('input[type="range"]')) {
@@ -729,7 +777,7 @@
               <div class="selectors"><details class="selector" id="mapsSection" open><summary>Maps <span id="mapsCount">Any</span></summary><div id="maps" class="choices" aria-label="maps"></div></details>
 <details class="selector" id="modesSection" open><summary>Modes <span id="modesCount">Any</span></summary><div id="modes" class="choices" aria-label="modes"></div></details>
 <details class="selector" id="regionsSection" open><summary>Regions <span id="regionsCount">Any</span></summary><div id="regions" class="choices" aria-label="regions"></div></details></div>
-              <div class="actions"><button id="quick" type="button">Switch lobby · F8</button><button id="refresh" type="button">Refresh</button><button id="clearFilters" type="button">Clear filters</button><button id="reset" type="button">Reset</button></div>
+              <div class="actions"><button id="quick" type="button">Search lobbies · F8</button><button id="refresh" type="button">Refresh</button><button id="clearFilters" type="button">Clear filters</button><button id="reset" type="button">Reset</button></div>
               <p id="status" role="status" aria-live="polite">Ready.</p><div id="summary"></div><div id="list"></div><button id="showMore" type="button" hidden>Show more</button>
             </div>
           </section>
@@ -742,6 +790,7 @@
                   <label>Switch lobby shortcut<div class="binding"><input id="switchKey" type="hidden"><button id="bind" type="button">F8</button><button id="clearBind" type="button">Off</button></div></label>
                   <label class="check wide"><input id="hideButton" type="checkbox">Hide Matchmaker button until hovered</label>
                   <label class="check"><input id="differentMap" type="checkbox">Different map only for quick switch</label>
+                  <label>Search duration · sec<div class="slider"><input type="range" data-for="searchDuration" data-max="30" min="1" max="30" step="1" aria-label="Search duration slider"><input id="searchDuration" type="number" min="1" max="30" step="1" aria-label="Search duration"></div></label>
                   <label>Message size · px<div class="slider"><input type="range" data-for="messageSize" data-max="40" min="10" max="40" step="1" aria-label="Message size slider"><input id="messageSize" type="number" min="10" max="40" step="1" aria-label="Message size"></div></label>
                   <label>Message duration · sec<div class="slider"><input type="range" data-for="messageDuration" data-max="30" min="1" max="30" step="1" aria-label="Message duration slider"><input id="messageDuration" type="number" min="1" max="30" step="1" aria-label="Message duration"></div></label>
 </form></div></section></div>
