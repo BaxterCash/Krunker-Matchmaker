@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.0.1
+// @version 1.0.2
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
@@ -17,15 +17,15 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
-    const VERSION = '1.0.1';
+    const VERSION = '1.0.2';
     const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
     const REQUEST_TIMEOUT = 8000;
     const SEARCH_COOLDOWN = 500;
-    const NOTICE_DURATION = 4000;
+    const NOTICE_DURATION = 3000;
     const LIMIT = 24;
-    const defaults = { kind: 'public', minPlayers: 1, maxPlayers: '', minTime: 0, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 4, hideButton: false };
+    const defaults = { kind: 'public', minPlayers: 1, maxPlayers: '', minTime: 0, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 3, hideButton: false };
     // Exact mode IDs read from Krunker's host menu; IDs are not consecutive.
     const modeNames = new Map([[0,"Free for All"],[1,"Team Deathmatch"],[2,"Hardpoint"],[3,"Capture the Flag"],[4,"Parkour"],[5,"Hide & Seek"],[6,"Infected"],[7,"Race"],[8,"Last Man Standing"],[9,"Simon Says"],[10,"Gun Game"],[11,"Prop Hunt"],[12,"Boss Hunt"],[13,"Classic FFA"],[14,"Deposit"],[15,"Stalker"],[16,"King of the Hill"],[17,"One in the Chamber"],[18,"Trade"],[19,"Kill Confirmed"],[20,"Defuse"],[21,"Sharp Shooter"],[22,"Traitor"],[23,"Raid"],[24,"Blitz"],[25,"Domination"],[26,"Squad Deathmatch"],[27,"Kranked FFA"],[28,"Team Defender"],[29,"Deposit FFA"],[33,"Chaos Snipers"],[34,"Bighead FFA"],[35,"Zombies"]]);
     const regionNames = new Map([["de-fra","Frankfurt"],["us-ca-sv","Silicon Valley"],["au-syd","Sydney"],["jb-hnd","Tokyo"],["sgp","Singapore"],["us-nj","New York"],["as-mb","Mumbai"],["us-tx","Dallas"],["brz","Brazil"],["me-bhn","Middle East"],["sss","Super Secret Servers"]]);
@@ -41,10 +41,12 @@
     const selections = { maps: [], modes: [], regions: [] };
     const regionPings = new Map();
     let settings = { ...defaults };
+    let legacyNoticeTiming = true;
     let storageOK = true;
     try {
         const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
         if (saved && [1, 2, 3].includes(saved.version) && saved.filters && typeof saved.filters === 'object') {
+            legacyNoticeTiming = saved.filters.noticeTimingVersion !== 2;
             for (const key of Object.keys(defaults)) {
                 if (['string', 'number', 'boolean'].includes(typeof saved.filters[key])) settings[key] = saved.filters[key];
             }
@@ -64,6 +66,8 @@
     } catch { storageOK = false; }
     selections.maps = selections.maps.filter(map => catalog.maps.has(map));
     if (!['public', 'custom', 'all'].includes(settings.kind)) settings.kind = defaults.kind;
+    // Migrate the old four-second default while preserving custom durations.
+    if (legacyNoticeTiming && Number(settings.messageDuration) === 4) settings.messageDuration = 3;
     settings.hideButton = settings.hideButton === true || settings.hideButton === 'true';
     settings.differentMap = settings.differentMap === true || settings.differentMap === 'true';
     if (typeof settings.switchKey !== 'string' || (settings.switchKey && !validShortcut(settings.switchKey))) settings.switchKey = 'F8';
@@ -308,7 +312,7 @@
     function switchingTo(game) {
         const info = `${game.map || 'Unknown map'} · ${modeLabel(game.mode)} · ${game.players}/${game.capacity} · ${game.region}`;
         showNotice(`SWITCHING — ${info}`, false, noticeDuration(), true);
-        try { sessionStorage.setItem('glorp_matchmaker_notice_v1', JSON.stringify({ info, id: game.id, until: Date.now() + 20000 })); } catch { /* optional visual continuity */ }
+        try { sessionStorage.setItem('glorp_matchmaker_notice_v1', JSON.stringify({ version: 2, info, id: game.id, until: Date.now() + noticeDuration() })); } catch { /* optional visual continuity */ }
     }
     async function navigateTo(game, job) {
         navigating = true;
@@ -349,7 +353,7 @@
     }
     function save() {
         settings = Object.fromEntries(Object.keys(defaults).map(key => [key, typeof defaults[key] === 'boolean' ? controls[key].checked : controls[key].value.trim()]));
-        try { localStorage.setItem(KEY, JSON.stringify({ version: 3, filters: { ...settings, maps: selections.maps, modes: selections.modes, regions: selections.regions } })); storageOK = true; }
+        try { localStorage.setItem(KEY, JSON.stringify({ version: 3, filters: { ...settings, noticeTimingVersion: 2, maps: selections.maps, modes: selections.modes, regions: selections.regions } })); storageOK = true; }
         catch { storageOK = false; }
     }
     function cancel() {
@@ -749,17 +753,18 @@
             const prior = JSON.parse(sessionStorage.getItem('glorp_matchmaker_notice_v1') || 'null');
             sessionStorage.removeItem('glorp_matchmaker_notice_v1');
             if (prior && prior.id === currentId() && prior.until > Date.now() && typeof prior.info === 'string') {
-                showNotice(`SWITCHING — ${prior.info}`);
+                const until = Math.min(prior.until, Date.now() + noticeDuration());
+                showNotice(`SWITCHING — ${prior.info}`, false, until - Date.now(), true);
                 confirmationTimer = setInterval(() => {
-                    if (currentId() !== prior.id || Date.now() >= prior.until) { clearInterval(confirmationTimer); return; }
+                    if (currentId() !== prior.id || Date.now() >= until) { clearInterval(confirmationTimer); return; }
                     const instructions = document.querySelector('#instructions');
                     if (instructions && instructions.getClientRects().length && /(?:game|lobby|server).{0,20}full|disconnected|connection.{0,20}(?:failed|error)|game.{0,20}not found/i.test(instructions.textContent || '')) {
-                        clearInterval(confirmationTimer); showNotice('NO LOBBY AVAILABLE', true); return;
+                        clearInterval(confirmationTimer); showNotice('NO LOBBY AVAILABLE', true, Math.max(1, until - Date.now())); return;
                     }
                     try {
                         const activity = typeof window.getGameActivity === 'function' ? window.getGameActivity() : null;
                         if (activity?.id === prior.id && activity.map && activity.mode != null) {
-                            clearInterval(confirmationTimer); showNotice(`SWITCHING — ${prior.info}`, false, noticeDuration(), true);
+                            clearInterval(confirmationTimer); // Already green; keep the original expiry.
                         }
                     } catch { /* remain pending until the client confirms */ }
                 }, 250);
