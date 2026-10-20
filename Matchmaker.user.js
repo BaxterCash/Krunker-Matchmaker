@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.6.1
+// @version 1.0.1
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
@@ -17,7 +17,7 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
-    const VERSION = '1.6.1';
+    const VERSION = '1.0.1';
     const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
