@@ -1,3 +1,13 @@
+// ==UserScript==
+// @name Glorp Matchmaker
+// @namespace local.glorp.matchmaker
+// @version 1.0.0
+// @description Krunker Matchmaker (F2)
+// @match https://krunker.io/*
+// @run-at document-start
+// @grant none
+// ==/UserScript==
+
 (() => {
     'use strict';
     // Glorp injects scripts into new documents. Do not run on hub pages or frames.
