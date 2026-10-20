@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.0.1
+// @version 1.6.1
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
@@ -17,15 +17,15 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
-    const VERSION = '1.6.0';
+    const VERSION = '1.6.1';
     const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
     const REQUEST_TIMEOUT = 8000;
     const SEARCH_COOLDOWN = 500;
     const NOTICE_DURATION = 4000;
-    const LIMIT = 12;
-    const defaults = { kind: 'public', minPlayers: 2, maxPlayers: '', minTime: 30, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 4, hideButton: false };
+    const LIMIT = 24;
+    const defaults = { kind: 'public', minPlayers: 1, maxPlayers: '', minTime: 0, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 4, hideButton: false };
     // Exact mode IDs read from Krunker's host menu; IDs are not consecutive.
     const modeNames = new Map([[0,"Free for All"],[1,"Team Deathmatch"],[2,"Hardpoint"],[3,"Capture the Flag"],[4,"Parkour"],[5,"Hide & Seek"],[6,"Infected"],[7,"Race"],[8,"Last Man Standing"],[9,"Simon Says"],[10,"Gun Game"],[11,"Prop Hunt"],[12,"Boss Hunt"],[13,"Classic FFA"],[14,"Deposit"],[15,"Stalker"],[16,"King of the Hill"],[17,"One in the Chamber"],[18,"Trade"],[19,"Kill Confirmed"],[20,"Defuse"],[21,"Sharp Shooter"],[22,"Traitor"],[23,"Raid"],[24,"Blitz"],[25,"Domination"],[26,"Squad Deathmatch"],[27,"Kranked FFA"],[28,"Team Defender"],[29,"Deposit FFA"],[33,"Chaos Snipers"],[34,"Bighead FFA"],[35,"Zombies"]]);
     const regionNames = new Map([["de-fra","Frankfurt"],["us-ca-sv","Silicon Valley"],["au-syd","Sydney"],["jb-hnd","Tokyo"],["sgp","Singapore"],["us-nj","New York"],["as-mb","Mumbai"],["us-tx","Dallas"],["brz","Brazil"],["me-bhn","Middle East"],["sss","Super Secret Servers"]]);
@@ -78,6 +78,7 @@
 
     let root, host, panel, trigger, status, list, summary, form, timer, previousFocus, notice, noticeTimer;
     let opened = false, operation = null, generation = 0, busy = '', games = [], fetchedAt = 0, lastSearch = -Infinity;
+    let visibleLimit = LIMIT;
     let navigating = false, confirmationTimer, updateTimer, ready = false, pendingMenuToggle = false;
     let invalidRows = 0, recordingKey = false;
     const controls = {};
@@ -118,7 +119,7 @@
     function displayRelease(release) {
         if (!release || release.draft || release.prerelease || !newerVersion(release.tag_name, VERSION)) return;
         const url = new URL(release.html_url);
-        if (url.origin !== 'https://github.com' || !url.pathname.startsWith('/' + UPDATE_REPO + '/releases/tag/')) return;
+        if (url.origin !== 'https://github.com' || !(url.pathname.startsWith('/' + UPDATE_REPO + '/releases/tag/') || url.pathname === '/' + UPDATE_REPO + '/blob/main/Matchmaker.user.js')) return;
         const link = root.querySelector('#updateAvailable');
         link.href = url.href; link.hidden = false;
         link.title = 'Version ' + release.tag_name;
@@ -134,14 +135,31 @@
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         try {
-            const response = await fetch('https://api.github.com/repos/' + UPDATE_REPO + '/releases/latest', {
-                signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer',
-                headers: { Accept: 'application/vnd.github+json' }
-            });
-            if (!response.ok) return;
-            const release = await response.json();
+            let release = null;
+            try {
+                const response = await fetch('https://api.github.com/repos/' + UPDATE_REPO + '/releases/latest', {
+                    signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer',
+                    headers: { Accept: 'application/vnd.github+json' }
+                });
+                if (response.ok) release = await response.json();
+            } catch { /* the repository version may still be available */ }
+            // Also inspect main: publishing a source update need not wait for a GitHub release.
+            if (!controller.signal.aborted) try {
+                const response = await fetch('https://raw.githubusercontent.com/' + UPDATE_REPO + '/main/Matchmaker.user.js', {
+                    signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-cache'
+                });
+                if (response.ok && Number(response.headers.get('content-length') || 0) <= 250000) {
+                    const source = await response.text();
+                    const header = /^\s*\/\/ ==UserScript==([\s\S]*?)\/\/ ==\/UserScript==/.exec(source.slice(0, 4096));
+                    const version = header && /^\/\/ @version\s+(\S+)\s*$/m.exec(header[1])?.[1];
+                    const internal = /const VERSION = ['"]([^'"]+)['"]/.exec(source)?.[1];
+                    if (source.length <= 250000 && version === internal && versionParts(version) && /@namespace local\.glorp\.matchmaker/.test(header?.[1] || '') && (!release || release.draft || release.prerelease || newerVersion(version, release.tag_name))) {
+                        release = { tag_name: version, html_url: 'https://github.com/' + UPDATE_REPO + '/blob/main/Matchmaker.user.js' };
+                    }
+                }
+            } catch { /* source inspection never executes remote code */ }
             displayRelease(release);
-            sessionStorage.setItem(key, JSON.stringify({ installed: VERSION, release: {
+            sessionStorage.setItem(key, JSON.stringify({ installed: VERSION, release: release && {
                 tag_name: release.tag_name, html_url: release.html_url, draft: release.draft, prerelease: release.prerelease
             } }));
         } catch { /* no retries, downloads, or interruption on offline/rate-limit errors */ }
@@ -233,15 +251,35 @@
         const ping = regionPings.get(game.region);
         return !!ping && Date.now() - ping.sampled < 60000 && ping.ms <= limit;
     }
-    function matches(game, filters, since) {
+    function rejectionReason(game, filters, since) {
         const time = remaining(game, since);
-        return game.standardMap && game.id !== currentId() && !game.locked && !game.paid && game.players < game.capacity &&
-            (!filters.regions.length || filters.regions.includes(game.region)) &&
-            (filters.kind === 'all' || game.kind === filters.kind) &&
-            (!filters.modes.length || filters.modes.includes(game.mode)) &&
-            (!filters.maps.length || filters.maps.includes(game.map)) && passesPing(game, filters.maxPing) &&
-            game.players >= filters.minPlayers && game.players <= filters.maxPlayers &&
-            (filters.minTime === 0 || (time !== null && time >= filters.minTime));
+        if (!game.standardMap) return 'Community maps';
+        if (game.id === currentId()) return 'Current lobby';
+        if (game.locked || game.paid || game.players >= game.capacity) return 'Full / locked / entry fee';
+        if (filters.kind !== 'all' && game.kind !== filters.kind) return 'Lobby type';
+        if (filters.regions.length && !filters.regions.includes(game.region)) return 'Regions';
+        if (filters.maps.length && !filters.maps.includes(game.map)) return 'Maps';
+        if (filters.modes.length && !filters.modes.includes(game.mode)) return 'Modes';
+        if (game.players < filters.minPlayers || game.players > filters.maxPlayers) return 'Player limits';
+        if (filters.minTime !== 0 && (time === null || time < filters.minTime)) return 'Time limit';
+        if (!passesPing(game, filters.maxPing)) return 'Ping estimate limit';
+        return '';
+    }
+    function matches(game, filters, since) { return !rejectionReason(game, filters, since); }
+    function renderBreakdown(selected, candidates) {
+        const counts = new Map();
+        for (const game of games) {
+            const reason = rejectionReason(game, selected, fetchedAt);
+            if (reason) counts.set(reason, (counts.get(reason) || 0) + 1);
+        }
+        const target = root.querySelector('#filterBreakdown');
+        target.replaceChildren();
+        for (const [label, count] of [['Listed lobbies', games.length], ...counts, ['Matching', candidates.length]]) {
+            const row = document.createElement('div'); row.className = 'breakdown-row';
+            const name = document.createElement('span'); name.textContent = label;
+            const value = document.createElement('span'); value.textContent = String(count);
+            row.append(name, value); target.append(row);
+        }
     }
     const modeLabel = mode => modeNames.get(Number(mode)) || (mode === '?' ? 'Unknown mode' : `Mode ${mode}`);
     function formatTime(value) {
@@ -394,8 +432,11 @@
         catch (error) { setStatus(error.message, true); return; }
         const candidates = games.filter(g => matches(g, selected, fetchedAt))
             .sort((a, b) => b.players - a.players || (b.seconds || 0) - (a.seconds || 0) || a.id.localeCompare(b.id));
-        summary.textContent = fetchedAt ? `${candidates.length} lobbies` : '';
-        for (const game of candidates.slice(0, LIMIT)) {
+        summary.textContent = fetchedAt ? `Showing ${Math.min(visibleLimit, candidates.length)} of ${candidates.length} lobbies` : '';
+        renderBreakdown(selected, candidates);
+        controls.showMore.hidden = candidates.length <= visibleLimit;
+        controls.showMore.disabled = !!busy;
+        for (const game of candidates.slice(0, visibleLimit)) {
             const row = document.createElement('article');
             row.className = 'lobby';
             const info = document.createElement('div');
@@ -426,6 +467,7 @@
         }
         controls.refresh.disabled = busy === 'join' || busy === 'quick';
         controls.quick.disabled = !!busy;
+        controls.clearFilters.disabled = busy === 'join' || busy === 'quick';
         controls.reset.disabled = busy === 'join' || busy === 'quick';
         controls.bind.disabled = busy === 'join' || busy === 'quick';
         for (const key of Object.keys(defaults)) controls[key].disabled = busy === 'join' || busy === 'quick';
@@ -444,7 +486,7 @@
         save();
         lastSearch = Date.now();
         const job = start(quick ? 'quick' : 'search');
-        games = []; fetchedAt = 0;
+        games = []; fetchedAt = 0; visibleLimit = LIMIT;
         render();
         setStatus('Loading Krunker lobbies…');
         const started = Date.now();
@@ -661,6 +703,8 @@
           #toolbar[data-hidden="true"]:not(:hover):not(:focus-within) #trigger { opacity:0; transform:translateY(-5px); }
           #toolbar:hover > *,#toolbar:focus-within > * { opacity:1; transform:translateY(0); }
           #updateAvailable { color:#ff9a24; background:linear-gradient(#3f3020,#251b13); border:2px solid #bc6e19; padding:8px 12px; text-decoration:none; font:12px/1.5 gamefont,GameFont,sans-serif; cursor:pointer; }
+          .breakdown-row { display:flex; justify-content:space-between; gap:20px; padding:5px 0; border-bottom:1px solid #ffffff12; }
+          #showMore { margin:12px 0 8px; }
           #updatedNotice { position:fixed; top:24px; right:16px; color:#ff9a24; font:14px/1.5 gamefont,GameFont,sans-serif; text-shadow:1px 2px #000; pointer-events:none; }
           @media(prefers-reduced-motion:reduce) { #toolbar > * { transition:none; } }
           select { color-scheme:dark; background-color:#242424; }
@@ -680,11 +724,11 @@
               <div class="selectors"><details class="selector" id="mapsSection" open><summary>Maps <span id="mapsCount">Any</span></summary><div id="maps" class="choices" aria-label="maps"></div></details>
 <details class="selector" id="modesSection" open><summary>Modes <span id="modesCount">Any</span></summary><div id="modes" class="choices" aria-label="modes"></div></details>
 <details class="selector" id="regionsSection" open><summary>Regions <span id="regionsCount">Any</span></summary><div id="regions" class="choices" aria-label="regions"></div></details></div>
-              <div class="actions"><button id="quick" type="button">Switch lobby · F8</button><button id="refresh" type="button">Refresh</button><button id="reset" type="button">Reset</button></div>
-              <p id="status" role="status" aria-live="polite">Ready.</p><div id="summary"></div><div id="list"></div>
+              <div class="actions"><button id="quick" type="button">Switch lobby · F8</button><button id="refresh" type="button">Refresh</button><button id="clearFilters" type="button">Clear filters</button><button id="reset" type="button">Reset</button></div>
+              <p id="status" role="status" aria-live="polite">Ready.</p><div id="summary"></div><div id="list"></div><button id="showMore" type="button" hidden>Show more</button>
             </div>
           </section>
-          <div id="settingsPopup" hidden><section class="window settings-window" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1"><header><h2 id="settingsTitle">Settings</h2><button id="settingsClose" type="button" aria-label="Close settings">Done</button></header><div class="body"><form class="limits"><label class="wide">Lobby type<select id="kind"><option value="public">Public matches</option><option value="custom">Custom games</option><option value="all">Public + custom</option></select></label>
+          <div id="settingsPopup" hidden><section class="window settings-window" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1"><header><h2 id="settingsTitle">Settings</h2><button id="settingsClose" type="button" aria-label="Close settings">Done</button></header><div class="body"><form class="limits"><details class="wide"><summary>Match breakdown</summary><div id="filterBreakdown"></div></details><label class="wide">Lobby type<select id="kind"><option value="public">Public matches</option><option value="custom">Custom games</option><option value="all">Public + custom</option></select></label>
                   <label>Minimum players<div class="slider"><input type="range" data-for="minPlayers" data-max="32" min="0" max="32" step="1" aria-label="Minimum players slider"><input id="minPlayers" aria-label="Minimum players" type="number" min="0" max="100000" step="1"></div></label>
                   <label>Maximum players (0 on slider = any)<div class="slider"><input type="range" data-for="maxPlayers" data-max="32" min="0" max="32" step="1" aria-label="Maximum players slider"><input id="maxPlayers" aria-label="Maximum players" type="number" min="0" max="100000" step="1" placeholder="Any"></div></label>
                   <label>Minimum seconds left<div class="slider"><input type="range" data-for="minTime" data-max="300" min="0" max="300" step="1" aria-label="Minimum time slider"><input id="minTime" aria-label="Minimum seconds left" type="number" min="0" max="100000" step="1"></div></label>
@@ -721,7 +765,7 @@
             }
         } catch { /* notice persistence is optional */ }
         status = root.querySelector('#status'); list = root.querySelector('#list'); summary = root.querySelector('#summary'); form = root.querySelector('form');
-        for (const key of [...Object.keys(defaults), 'refresh', 'close', 'reset', 'quick', 'bind', 'clearBind']) controls[key] = root.querySelector(`#${key}`);
+        for (const key of [...Object.keys(defaults), 'refresh', 'close', 'reset', 'quick', 'bind', 'clearBind', 'showMore', 'clearFilters']) controls[key] = root.querySelector(`#${key}`);
         function apply(values) {
             for (const key of Object.keys(defaults)) {
                 if (typeof defaults[key] === 'boolean') controls[key].checked = values[key];
@@ -746,6 +790,13 @@
         controls.quick.addEventListener('click', quickSwitch);
         controls.bind.addEventListener('click', () => { recordingKey = true; syncShortcut(); setStatus('Press a function key or Ctrl/Alt + a key. Esc cancels key capture.'); });
         controls.clearBind.addEventListener('click', () => { if (busy) return; controls.switchKey.value = ''; recordingKey = false; syncShortcut(); save(); });
+        controls.showMore.addEventListener('click', () => { if (busy) return; visibleLimit += LIMIT; render(); });
+        controls.clearFilters.addEventListener('click', () => {
+            if (busy === 'join' || busy === 'quick' || navigating) return;
+            cancel(); selections.maps = []; selections.modes = []; selections.regions = [];
+            apply({ ...settings, kind: 'all', minPlayers: 0, maxPlayers: '', minTime: 0, maxPing: 0 });
+            save(); drawChoices(); visibleLimit = LIMIT; render();
+        });
         controls.reset.addEventListener('click', () => { if (busy === 'join' || busy === 'quick') return; cancel(); selections.maps = []; selections.modes = []; selections.regions = []; apply(defaults); drawChoices(); save(); render(); setStatus('Filters reset. All maps and modes included.'); });
         form.addEventListener('submit', event => { event.preventDefault(); refresh(); });
         form.addEventListener('input', event => {
