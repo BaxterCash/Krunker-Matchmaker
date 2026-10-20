@@ -1,44 +1,43 @@
 # Krunker Matchmaker
 
-A lightweight Glorp userscript. Current version: **1.0.2**.
+Glorp userscript, version **1.0.3**. Put `Matchmaker.user.js` in `Documents/glorp/scripts` and enable Userscripts. Keep one copy; keep backups outside that folder.
 
-Put `Matchmaker.user.js` in `Documents/glorp/scripts` and enable Userscripts in Glorp. Keep one copy; store backups outside the scripts folder. Glorp controls when edited scripts are loaded again.
+## Controls
 
-**F2** toggles the menu. **F8** switches once using your filters. Maps, modes and regions support multiple selections. The map selector and matching use standard built-in maps.
+- **F2:** open or close the menu.
+- **F8** (customizable): start a lobby search; press again to cancel. Cancellation starts the normal **0.5-second cooldown**.
+- **Settings → Search duration:** maximum search time, **1–30 seconds**, default **5**. A verified match ends the search early.
+- The gray status cycles `SEARCHING`, `SEARCHING.`, `SEARCHING..`, `SEARCHING...`, then repeats.
+- Once a lobby passes its final check, green SWITCHING appears before one navigation. Its original notice expiry carries across navigation, without changing back to gray or restarting. Default notice duration: three seconds.
 
-## Finding more lobbies
+## Search behavior and reliability
 
-The old view stopped at twelve rows. Results now show 24 at a time, with **Show more** to reach the remainder.
+Search uses selected maps, modes, regions and limits. It refreshes the list about once per second only while the search is active. Up to three fresh candidates are checked per pass; each lobby ID is checked at most once during that search. A full or changed candidate is skipped in favor of another candidate.
 
-New defaults require one player and no minimum time remaining. Existing saved filters are preserved. **Clear filters** clears map/mode/region selections, player/time/ping limits and lobby-type restrictions, while preserving UI settings and the standard-map/full/locked/entry-fee checks.
+**No slot queue:** a rejected full lobby is not watched for an opening. The search stops on a successful choice, cancellation, deadline or request failure. It never schedules a second navigation or continues after joining. All requests and delayed navigation are cancellation-aware.
 
-Open **Settings → Match breakdown** to see which restrictions removed lobbies. Counts assign each excluded lobby to its first failing check; they are not overlapping totals. Different map only applies additionally to quick switch.
+The current lobby ID and map can come from Krunker's current-game activity, including when the URL has no `game=` parameter. This fixes the Different map only check for ordinary automatic joins.
 
-Each switch checks one candidate again before navigating. Full, locked, paid, incompatible and no-longer-matching lobbies are rejected. No waiting for slots, queue or automatic retry. Green SWITCHING means the final eligibility check passed; a slot cannot be reserved.
+A live debugging capture showed a lobby advertised as **7/8** that was **8/8** by its direct check. The old search treated that one stale candidate as failure for the entire operation. The timed search now skips it and examines other eligible lobbies without revisiting it.
+
+## Filters and display
+
+Maps, modes and regions allow multiple selections. Only standard built-in maps are matched. **Show more** exposes all results, 24 per page.
+
+New-install defaults require one player and no minimum time. Saved choices are preserved. **Clear filters** clears map/mode/region selections and player/time/ping/lobby-type restrictions while preserving UI preferences and standard-map/full/locked/entry-fee safeguards.
+
+**Settings → Match breakdown** shows why listed lobbies are excluded, assigning each to its first failing filter. Different map only is an additional restriction for hotkey searches.
+
+Other settings include message size/duration, regional ping estimate, shortcut and hiding the menu button until hovered. The toolbar is hidden during active pointer-locked gameplay and returns in the menu or on pause.
 
 ## Updates
 
-The script checks once per Glorp WebView session:
-1. The latest stable GitHub Release.
-2. The `Matchmaker.user.js` file on `main`.
+Once per Glorp WebView session, the script checks the latest stable release and the script on `main`. The newer valid version wins. Increase both `@version` and `VERSION` together using stable `X.Y.Z` versions.
 
-The newer valid version wins. In the source file, `@version` and `VERSION` must agree; increase both when publishing changes. Stable versions use `X.Y.Z`. This also detects source updates when a release tag is missing or older.
+An orange **Update available** link opens the source or release page. You download and replace the local script manually. Remote source is read only for its version; it is never executed or installed automatically. A changed local version displays UPDATED for five seconds.
 
-A newer version shows an orange **Update available** link. It opens the release or source page. **You download and replace the local file yourself.** Remote source is read as text for version checking; it is never executed or installed automatically. Offline and rate-limit failures do not interrupt games or trigger retry loops.
-
-The first load of a changed local version shows an orange **UPDATED** notice for five seconds. Ordinary launches of the same version do not repeat it.
-
-Version 1.0.2 keeps the green switching message green across navigation and carries its original expiry instead of restarting the timer. The default is three seconds; the old four-second default is migrated once, and later explicit custom duration choices remain supported.
-
-## Other settings
-
-Message size/duration, configurable switch shortcut, player/time limits, Different map only, regional ping estimate cap, and optional button hiding with hover reveal. Destination ping is an estimate, not a measured guarantee.
+Glorp controls when edited scripts are loaded. This update did not restart or reload the running game.
 
 ## Validation
 
-Version 1.0.2 was checked against a captured 411-lobby response. With all regions selected, old default limits matched 28 lobbies and new defaults matched 51 in that snapshot. Counts change as servers fill, end and change maps.
-
-Focused browser checks cover pagination, saved-filter preservation, clear-filter safety, live-snapshot eligibility, version consistency, release/source update selection, single navigation, cancellation and full-lobby rejection. No long-session gameplay or native startup-focus claim is implied.
-
-
-
+Eight focused browser checks cover animation, timed expiry, exact cancellation cooldown, URL-less current-lobby lookup, stale-full fallback, no rechecking of rejected lobbies, settings persistence, later discovery and late-response cancellation. A separate regression verifies that the green notice retains one three-second expiry across navigation. These checks do not claim live combat or long-session acceptance.
