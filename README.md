@@ -1,6 +1,6 @@
 # Krunker Matchmaker
 
-A lightweight Glorp userscript. Current version: **1.6.1**.
+A lightweight Glorp userscript. Current version: **1.0.1**.
 
 Put `Matchmaker.user.js` in `Documents/glorp/scripts` and enable Userscripts in Glorp. Keep one copy; store backups outside the scripts folder. Glorp controls when edited scripts are loaded again.
 
@@ -34,6 +34,8 @@ Message size/duration, configurable switch shortcut, player/time limits, Differe
 
 ## Validation
 
-Version 1.6.1 was checked against a captured 411-lobby response. With all regions selected, old default limits matched 28 lobbies and new defaults matched 51 in that snapshot. Counts change as servers fill, end and change maps.
+Version 1.0.1 was checked against a captured 411-lobby response. With all regions selected, old default limits matched 28 lobbies and new defaults matched 51 in that snapshot. Counts change as servers fill, end and change maps.
 
 Focused browser checks cover pagination, saved-filter preservation, clear-filter safety, live-snapshot eligibility, version consistency, release/source update selection, single navigation, cancellation and full-lobby rejection. No long-session gameplay or native startup-focus claim is implied.
+
+
