@@ -99,6 +99,7 @@
     }, true);
     function syncToolbar() {
         if (!root) return;
+        root.querySelector('#toolbar').hidden = !!document.pointerLockElement;
         root.querySelector('#toolbar').dataset.hidden = String(settings.hideButton && !opened);
     }
     function focusGameDocument() {
