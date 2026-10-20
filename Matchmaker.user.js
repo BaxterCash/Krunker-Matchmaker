@@ -1,5 +1,3 @@
-//v1.0
-
 (() => {
     'use strict';
     // Glorp injects scripts into new documents. Do not run on hub pages or frames.
@@ -9,23 +7,25 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
+    const VERSION = '1.6.0';
+    const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
     const REQUEST_TIMEOUT = 8000;
     const SEARCH_COOLDOWN = 500;
     const NOTICE_DURATION = 4000;
     const LIMIT = 12;
-    const defaults = { kind: 'public', minPlayers: 2, maxPlayers: '', minTime: 30, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 4 };
+    const defaults = { kind: 'public', minPlayers: 2, maxPlayers: '', minTime: 30, maxPing: 0, switchKey: 'F8', differentMap: true, messageSize: 16, messageDuration: 4, hideButton: false };
     // Exact mode IDs read from Krunker's host menu; IDs are not consecutive.
     const modeNames = new Map([[0,"Free for All"],[1,"Team Deathmatch"],[2,"Hardpoint"],[3,"Capture the Flag"],[4,"Parkour"],[5,"Hide & Seek"],[6,"Infected"],[7,"Race"],[8,"Last Man Standing"],[9,"Simon Says"],[10,"Gun Game"],[11,"Prop Hunt"],[12,"Boss Hunt"],[13,"Classic FFA"],[14,"Deposit"],[15,"Stalker"],[16,"King of the Hill"],[17,"One in the Chamber"],[18,"Trade"],[19,"Kill Confirmed"],[20,"Defuse"],[21,"Sharp Shooter"],[22,"Traitor"],[23,"Raid"],[24,"Blitz"],[25,"Domination"],[26,"Squad Deathmatch"],[27,"Kranked FFA"],[28,"Team Defender"],[29,"Deposit FFA"],[33,"Chaos Snipers"],[34,"Bighead FFA"],[35,"Zombies"]]);
     const regionNames = new Map([["de-fra","Frankfurt"],["us-ca-sv","Silicon Valley"],["au-syd","Sydney"],["jb-hnd","Tokyo"],["sgp","Singapore"],["us-nj","New York"],["as-mb","Mumbai"],["us-tx","Dallas"],["brz","Brazil"],["me-bhn","Middle East"],["sss","Super Secret Servers"]]);
-    // Known map names supplement live discovery; unavailable maps are selectable filters, never joins.
-    const knownMaps = ["AIM_Room","Acid_Run","Arctic_Parkour","Arena","Atomic","Barnyard","Bastion","Bazaar","BhopPerfect","Bhop_Suburbs","Bhop_VIP","Black_Tower","Bright_Parkour","Builder_Boys","Bureau","Burg","CS1.6_awp_lego_2","Chocolate_Run","Citadel","Clockwork","Easy_Parkour_1","Erupt","Evacuation","FNAF_2","Facility","Freight","Frontier","HQ","Habitat","IDK_PARKOUR","Industry","Infect_to_Revive","Kanji","Khepri","Krunk_Plaza","LMGJ_Labyrinth","Laboratory","Lagoon","Lava_Run","Littletown","Lostworld","Lumber","Lush","MC_Paradise","Minecraft_Ville","Newtown_FFa","Oasis","Oasis_Legacy","Old_Burg","Papaya_Parkour","Parkour-Ocean","Piazza","RaynbowParkour","Sandstorm","Santas_Parkour!","Shipment","Shipyard","Shoot_or_Fall","Site","SkyTemple","Soul Sanctum","Stockade","Subzero","Throwback","Tortuga","TowerWar_3","Trench_War_H1","Tropicano","Undergrowth","VIETNAM_WAR","Vivo","Walljump_6.4","Zombie_Bulwark","Zombie_Chaser","bhop!!","bhop_Electro","bhop_Pyramid","bhop_void","eterno_jump","pk_BlueRiver","race_Mariokart","slide_blehh","slide_moonlight"];
+    // Built-in maps only. Live cm=0 metadata adds future standard maps.
+    const knownMaps = ["Arena","Atomic","Barnyard","Bastion","Bazaar","Bureau","Burg","Citadel","Clockwork","Erupt","Evacuation","Facility","Freight","Frontier","HQ","Habitat","Industry","Kanji","Khepri","Krunk_Plaza","Laboratory","Lagoon","Littletown","Lostworld","Lumber","Lush","Oasis","Old_Burg","Piazza","Sandstorm","Shipment","Shipyard","Site","SkyTemple","Soul Sanctum","Stockade","Subzero","Throwback","Tortuga","Tropicano","Undergrowth","Vivo","eterno_jump","slide_moonlight"];
     const catalog = { maps: new Set(knownMaps), modes: new Set([...modeNames.keys()].map(String)), regions: new Set(regionNames.keys()) };
     try {
         const saved = JSON.parse(localStorage.getItem('glorp_matchmaker_catalog_v1') || 'null');
         for (const key of ['maps', 'modes', 'regions']) if (Array.isArray(saved?.[key])) {
-            for (const value of saved[key].slice(0, 5000)) if (typeof value === 'string' && value && value.length <= (key === 'maps' ? 160 : 80) && (key !== 'modes' || /^\d+$/.test(value))) catalog[key].add(value);
+            for (const value of saved[key].slice(0, 5000)) if (typeof value === 'string' && value && value.length <= (key === 'maps' ? 160 : 80) && (key !== 'modes' || /^\d+$/.test(value)) && (key !== 'maps' || saved.version === 2 || knownMaps.includes(value))) catalog[key].add(value);
         }
     } catch { /* catalog persistence is optional */ }
     const selections = { maps: [], modes: [], regions: [] };
@@ -52,7 +52,9 @@
             if (region) selections.regions = [region.replace(/^"|"$/g, '')];
         }
     } catch { storageOK = false; }
+    selections.maps = selections.maps.filter(map => catalog.maps.has(map));
     if (!['public', 'custom', 'all'].includes(settings.kind)) settings.kind = defaults.kind;
+    settings.hideButton = settings.hideButton === true || settings.hideButton === 'true';
     settings.differentMap = settings.differentMap === true || settings.differentMap === 'true';
     if (typeof settings.switchKey !== 'string' || (settings.switchKey && !validShortcut(settings.switchKey))) settings.switchKey = 'F8';
     for (const key of ['minPlayers', 'maxPlayers', 'minTime', 'maxPing']) {
@@ -66,7 +68,7 @@
 
     let root, host, panel, trigger, status, list, summary, form, timer, previousFocus, notice, noticeTimer;
     let opened = false, operation = null, generation = 0, busy = '', games = [], fetchedAt = 0, lastSearch = -Infinity;
-    let navigating = false, confirmationTimer;
+    let navigating = false, confirmationTimer, updateTimer, ready = false, pendingMenuToggle = false;
     let invalidRows = 0, recordingKey = false;
     const controls = {};
     const abortError = () => new DOMException('Cancelled', 'AbortError');
@@ -74,6 +76,85 @@
     const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,24}:[a-zA-Z0-9_-]{1,80}$/.test(id);
     const number = value => typeof value === 'number' && Number.isFinite(value);
     const flag = value => value === 1 || value === true || value === '1' || value === 'true';
+
+    // Capture F2 before the game attaches its own keyboard handlers.
+    window.addEventListener('keydown', event => {
+        if (!(event.key === 'F2' || event.code === 'F2' || event.keyCode === 113) || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (event.repeat) return;
+        if (!ready) { pendingMenuToggle = !pendingMenuToggle; return; }
+        if (busy === 'quick') { cancel(); hideNotice(); }
+        if (opened) close(); else show();
+    }, true);
+    function syncToolbar() {
+        if (!root) return;
+        root.querySelector('#toolbar').dataset.hidden = String(settings.hideButton && !opened);
+    }
+    function focusGameDocument() {
+        if (document.visibilityState !== 'visible' || opened || document.pointerLockElement) return;
+        if (document.activeElement && ![document.body, document.documentElement].includes(document.activeElement)) return;
+        try { window.focus(); document.body.focus({ preventScroll: true }); } catch { /* native focus remains controlled by Glorp */ }
+    }
+    function versionParts(value) {
+        const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(value));
+        return match ? match.slice(1).map(Number) : null;
+    }
+    function newerVersion(candidate, installed) {
+        const a = versionParts(candidate), b = versionParts(installed);
+        if (!a || !b) return false;
+        for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+        return false;
+    }
+    function displayRelease(release) {
+        if (!release || release.draft || release.prerelease || !newerVersion(release.tag_name, VERSION)) return;
+        const url = new URL(release.html_url);
+        if (url.origin !== 'https://github.com' || !url.pathname.startsWith('/' + UPDATE_REPO + '/releases/tag/')) return;
+        const link = root.querySelector('#updateAvailable');
+        link.href = url.href; link.hidden = false;
+        link.title = 'Version ' + release.tag_name;
+        host.style.setProperty('--notice-top', '180px');
+    }
+    async function checkUpdates() {
+        const key = 'glorp_matchmaker_update_check_v1';
+        try {
+            const prior = JSON.parse(sessionStorage.getItem(key) || 'null');
+            if (prior?.installed === VERSION) { displayRelease(prior.release); return; }
+            sessionStorage.setItem(key, JSON.stringify({ installed: VERSION }));
+        } catch { return; }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+            const response = await fetch('https://api.github.com/repos/' + UPDATE_REPO + '/releases/latest', {
+                signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer',
+                headers: { Accept: 'application/vnd.github+json' }
+            });
+            if (!response.ok) return;
+            const release = await response.json();
+            displayRelease(release);
+            sessionStorage.setItem(key, JSON.stringify({ installed: VERSION, release: {
+                tag_name: release.tag_name, html_url: release.html_url, draft: release.draft, prerelease: release.prerelease
+            } }));
+        } catch { /* no retries, downloads, or interruption on offline/rate-limit errors */ }
+        finally { clearTimeout(timeout); }
+    }
+    function announceLocalUpdate() {
+        try {
+            const key = 'glorp_matchmaker_installed_version';
+            let until = Number(sessionStorage.getItem('glorp_matchmaker_updated_until')) || 0;
+            if (localStorage.getItem(key) !== VERSION) {
+                localStorage.setItem(key, VERSION);
+                until = Date.now() + 5000;
+                sessionStorage.setItem('glorp_matchmaker_updated_until', String(until));
+            }
+            if (until <= Date.now()) return;
+            const toast = root.querySelector('#updatedNotice');
+            toast.textContent = 'UPDATED · ' + VERSION; toast.hidden = false;
+            updateTimer = setTimeout(() => {
+                toast.hidden = true;
+                try { sessionStorage.removeItem('glorp_matchmaker_updated_until'); } catch { /* optional */ }
+            }, Math.min(5000, until - Date.now()));
+        } catch { /* a version announcement must never prevent startup */ }
+    }
 
     // Accept extra fields/maps/modes; reject ambiguous counts and incompatible schemas.
     function parseGame(row) {
@@ -85,6 +166,7 @@
         return {
             id, region, players, capacity,
             map: typeof info.i === 'string' ? info.i.slice(0, 160) : '',
+            standardMap: info.cm === 0 || (info.cm == null && catalog.maps.has(info.i)),
             mode: Number.isInteger(info.g) && info.g >= 0 ? String(info.g) : '?',
             kind: info.c === 0 ? 'public' : info.c === 1 ? 'custom' : 'unknown',
             locked: flag(info.pw), paid: flag(info.kr),
@@ -143,7 +225,7 @@
     }
     function matches(game, filters, since) {
         const time = remaining(game, since);
-        return game.id !== currentId() && !game.locked && !game.paid && game.players < game.capacity &&
+        return game.standardMap && game.id !== currentId() && !game.locked && !game.paid && game.players < game.capacity &&
             (!filters.regions.length || filters.regions.includes(game.region)) &&
             (filters.kind === 'all' || game.kind === filters.kind) &&
             (!filters.modes.length || filters.modes.includes(game.mode)) &&
@@ -176,8 +258,27 @@
     function hideNotice() { clearTimeout(noticeTimer); notice.hidden = true; }
     function switchingTo(game) {
         const info = `${game.map || 'Unknown map'} · ${modeLabel(game.mode)} · ${game.players}/${game.capacity} · ${game.region}`;
-        showNotice(`SWITCHING — ${info}`);
+        showNotice(`SWITCHING — ${info}`, false, noticeDuration(), true);
         try { sessionStorage.setItem('glorp_matchmaker_notice_v1', JSON.stringify({ info, id: game.id, until: Date.now() + 20000 })); } catch { /* optional visual continuity */ }
+    }
+    async function navigateTo(game, job) {
+        navigating = true;
+        switchingTo(game);
+        // Let the verified green notice paint before leaving; abort never schedules another join.
+        await new Promise(resolve => {
+            const done = () => { clearTimeout(delay); job.signal.removeEventListener('abort', done); resolve(); };
+            const delay = setTimeout(done, 180);
+            job.signal.addEventListener('abort', done, { once: true });
+            if (job.signal.aborted) done();
+        });
+        if (!active(job)) {
+            navigating = false; hideNotice();
+            try { sessionStorage.removeItem('glorp_matchmaker_notice_v1'); } catch { /* optional */ }
+            return;
+        }
+        const destination = new URL('/', location.origin);
+        destination.searchParams.set('game', game.id);
+        try { location.assign(destination.href); } catch (error) { navigating = false; throw error; }
     }
     function filters() {
         const result = {};
@@ -233,18 +334,18 @@
     }
     function updateChoices() {
         for (const game of games) {
-            if (game.map) catalog.maps.add(game.map);
+            if (game.map && game.standardMap) catalog.maps.add(game.map);
             if (game.mode !== '?') catalog.modes.add(game.mode);
             catalog.regions.add(game.region);
         }
-        try { localStorage.setItem('glorp_matchmaker_catalog_v1', JSON.stringify(Object.fromEntries(Object.entries(catalog).map(([key, values]) => [key, [...values].slice(-5000)])))); } catch { /* optional catalog */ }
+        try { localStorage.setItem('glorp_matchmaker_catalog_v1', JSON.stringify({ version: 2, ...Object.fromEntries(Object.entries(catalog).map(([key, values]) => [key, [...values].slice(-5000)])) })); } catch { /* optional catalog */ }
         drawChoices();
     }
     function drawChoices() {
         // Keep every known choice visible, independently of lobby type and current availability.
         const scoped = games;
         for (const key of ['maps', 'modes', 'regions']) {
-            const values = [...new Set([...catalog[key], ...scoped.map(g => key === 'maps' ? g.map : key === 'modes' ? g.mode : g.region).filter(v => v && v !== '?'), ...selections[key]])];
+            const values = [...new Set([...catalog[key], ...scoped.map(g => key === 'maps' ? (g.standardMap ? g.map : '') : key === 'modes' ? g.mode : g.region).filter(v => v && v !== '?'), ...selections[key]])];
             values.sort(key === 'modes' ? (a, b) => Number(a) - Number(b) : (a, b) => a.localeCompare(b));
             const container = root.querySelector(`#${key}`);
             container.replaceChildren();
@@ -385,12 +486,7 @@
             const fresh = parseGame(await request(`game-info?game=${encodeURIComponent(game.id)}`, job.signal));
             if (!active(job)) return;
             if (!fresh || fresh.id !== game.id || !matches(fresh, selected, started) || (selected.differentMap && fresh.map === map)) throw new Error('Lobby is full or unavailable.');
-            const destination = new URL('/', location.origin);
-            destination.searchParams.set('game', fresh.id);
-            setStatus('Checked. Switching lobby…');
-            switchingTo(fresh);
-            navigating = true;
-            try { location.assign(destination.href); } catch (error) { navigating = false; throw error; }
+            await navigateTo(fresh, job);
             return;
         }
         throw new Error('The checked lobbies filled up or changed. Refresh or change your filters.');
@@ -418,12 +514,7 @@
             games = games.map(old => old.id === id ? { ...game, seconds: game.seconds === null ? null : game.seconds + (started - fetchedAt) / 1000 } : old);
             if (!matches(game, selected, started)) throw new Error('Lobby is full, locked, or no longer matches your filters. Refresh or choose another.');
             setStatus('Checked. Joining…');
-            const destination = new URL('/', location.origin);
-            destination.searchParams.set('game', game.id);
-            switchingTo(game);
-            // Only navigate after a click and a successful final check. Never loop on failure.
-            navigating = true;
-            try { location.assign(destination.href); } catch (error) { navigating = false; throw error; }
+            await navigateTo(game, job);
         } catch (error) {
             if (active(job)) setStatus(error.message || 'Could not verify this lobby. Refresh to try again.', true);
         } finally { finish(job); }
@@ -435,6 +526,7 @@
         }
         previousFocus = document.activeElement;
         opened = true;
+        syncToolbar();
         panel.hidden = false;
         trigger.setAttribute('aria-expanded', 'true');
         render();
@@ -448,6 +540,7 @@
     }
     function close() {
         opened = false;
+        syncToolbar();
         root.querySelector('#settingsPopup').hidden = true;
         panel.querySelector('.window').inert = false;
         cancel();
@@ -501,7 +594,7 @@
           button:hover { background:#ffffff12; border-color:#646075; } button:disabled { opacity:.45; cursor:wait; }
           button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid #b6a7df; outline-offset:2px; }
           #trigger { position:fixed; right:16px; top:78px; pointer-events:auto; background:linear-gradient(140deg,#24222e,#111117); border-color:#676072; box-shadow:0 4px 18px #0008; }
-          #notice { position:fixed; top:132px; right:16px; max-width:min(440px,calc(100vw - 32px)); pointer-events:none; text-align:right; color:#b8b8b8; font:16px/1.3 gamefont,GameFont,sans-serif; text-shadow:1px 2px 3px #000,-1px -1px 2px #000; }
+          #notice { position:fixed; top:var(--notice-top,132px); right:16px; max-width:min(440px,calc(100vw - 32px)); pointer-events:none; text-align:right; color:#b8b8b8; font:16px/1.3 gamefont,GameFont,sans-serif; text-shadow:1px 2px 3px #000,-1px -1px 2px #000; }
           #notice strong { display:block; font:inherit; overflow-wrap:anywhere; } #notice[data-success="true"] { color:#6dff89; } #notice[data-error="true"] { color:#ff5959; }
           #panel { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:16px; background:#0009; pointer-events:auto; }
           .window { width:800px; max-width:100%; max-height:92vh; display:flex; flex-direction:column; background:linear-gradient(145deg,#20212b 0%,#13141c 50%,#0c0d12 100%); border:1px solid #42414d; border-radius:16px; box-shadow:0 18px 80px #000c; overflow:hidden; }
@@ -552,6 +645,14 @@
           .limits label { min-width:0; overflow-wrap:anywhere; line-height:1.7; }
           .slider { min-width:0; gap:14px; } .slider input[type="number"] { width:88px; flex-shrink:0; }
           .binding { flex-wrap:wrap; padding-bottom:4px; }
+          #toolbar { position:fixed; top:62px; right:0; padding:16px; min-width:240px; min-height:76px; display:flex; flex-direction:column; align-items:flex-end; gap:12px; pointer-events:auto; }
+          #toolbar #trigger { position:static; }
+          #toolbar > * { opacity:1; transform:translateY(0); transition:opacity .22s ease,transform .22s ease; }
+          #toolbar[data-hidden="true"]:not(:hover):not(:focus-within) #trigger { opacity:0; transform:translateY(-5px); }
+          #toolbar:hover > *,#toolbar:focus-within > * { opacity:1; transform:translateY(0); }
+          #updateAvailable { color:#ff9a24; background:linear-gradient(#3f3020,#251b13); border:2px solid #bc6e19; padding:8px 12px; text-decoration:none; font:12px/1.5 gamefont,GameFont,sans-serif; cursor:pointer; }
+          #updatedNotice { position:fixed; top:24px; right:16px; color:#ff9a24; font:14px/1.5 gamefont,GameFont,sans-serif; text-shadow:1px 2px #000; pointer-events:none; }
+          @media(prefers-reduced-motion:reduce) { #toolbar > * { transition:none; } }
           select { color-scheme:dark; background-color:#242424; }
           select option,optgroup { color:#eee; background-color:#242424; }
           select:open { color:#eee; background-color:#242424; }
@@ -559,7 +660,8 @@
           .lobby { grid-template-columns:minmax(0,1fr) auto auto; } .counts { white-space:normal; }
           @media(max-width:580px) { .body {padding:14px;} .lobby {gap:7px;} .counts {font-size:10px;} .limits {grid-template-columns:1fr;} }
         </style>
-        <button id="trigger" type="button" aria-label="Open Glorp Matchmaker" aria-expanded="false">Matchmaker · F2</button>
+        <div id="toolbar"><button id="trigger" type="button" aria-label="Open Glorp Matchmaker" aria-expanded="false">Matchmaker · F2</button><a id="updateAvailable" hidden target="_blank" rel="noopener noreferrer">Update available</a></div>
+        <div id="updatedNotice" hidden role="status" aria-live="polite"></div>
         <div id="notice" hidden role="status" aria-live="polite"><strong></strong></div>
         <div id="panel" hidden>
           <section class="window" role="dialog" aria-modal="true" aria-labelledby="title" tabindex="-1">
@@ -579,6 +681,7 @@
                   <label>Max region ping estimate · ms (0 = off)<div class="slider"><input type="range" data-for="maxPing" data-max="300" min="0" max="300" step="1" aria-label="Maximum ping slider"><input id="maxPing" aria-label="Maximum region ping estimate" type="number" min="0" max="100000" step="1"></div></label>
                   <small id="pingNote" class="wide"></small>
                   <label>Switch lobby shortcut<div class="binding"><input id="switchKey" type="hidden"><button id="bind" type="button">F8</button><button id="clearBind" type="button">Off</button></div></label>
+                  <label class="check wide"><input id="hideButton" type="checkbox">Hide Matchmaker button until hovered</label>
                   <label class="check"><input id="differentMap" type="checkbox">Different map only for quick switch</label>
                   <label>Message size · px<div class="slider"><input type="range" data-for="messageSize" data-max="40" min="10" max="40" step="1" aria-label="Message size slider"><input id="messageSize" type="number" min="10" max="40" step="1" aria-label="Message size"></div></label>
                   <label>Message duration · sec<div class="slider"><input type="range" data-for="messageDuration" data-max="30" min="1" max="30" step="1" aria-label="Message duration slider"><input id="messageDuration" type="number" min="1" max="30" step="1" aria-label="Message duration"></div></label>
@@ -616,6 +719,7 @@
             }
             syncSliders(); syncShortcut();
             notice.style.fontSize = `${Number(values.messageSize) || 16}px`;
+            syncToolbar();
         }
         const popup = root.querySelector('#settingsPopup');
         const mainWindow = panel.querySelector('.window');
@@ -639,7 +743,7 @@
             if (busy === 'search') cancel();
             syncSliders();
             if (event.target === controls.kind) drawChoices();
-            try { filters(); save(); notice.style.fontSize = `${Number(settings.messageSize)}px`; setStatus('Filters updated. Displaying matching lobbies from this list.'); }
+            try { filters(); save(); syncToolbar(); notice.style.fontSize = `${Number(settings.messageSize)}px`; setStatus('Filters updated. Displaying matching lobbies from this list.'); }
             catch (error) { setStatus(error.message, true); }
             render();
         });
@@ -658,7 +762,7 @@
         });
         root.addEventListener('keyup', event => { if (opened) event.stopPropagation(); });
         root.addEventListener('pointerdown', event => event.stopPropagation());
-        document.addEventListener('pointerlockchange', () => { trigger.hidden = !!document.pointerLockElement; if (document.pointerLockElement && opened) close(); });
+        document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement && opened) close(); syncToolbar(); });
         window.addEventListener('keydown', event => {
             if (event.repeat) return;
             if (busy === 'quick' && event.key === 'Escape') {
@@ -671,16 +775,20 @@
                 if (!validShortcut(key)) { setStatus('Choose an unreserved function key or Ctrl/Alt + a key.', true); return; }
                 controls.switchKey.value = key; recordingKey = false; syncShortcut(); save(); setStatus('Switch shortcut saved.'); return;
             }
-            if (event.key === 'F2' && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
-                event.preventDefault(); event.stopImmediatePropagation();
-                if (busy === 'quick') { cancel(); hideNotice(); }
-                if (opened) close(); else show();
-            } else if (controls.switchKey.value && shortcutFromEvent(event) === controls.switchKey.value) {
+            if (controls.switchKey.value && shortcutFromEvent(event) === controls.switchKey.value) {
                 event.preventDefault(); event.stopImmediatePropagation(); quickSwitch();
             }
         }, true);
-        window.addEventListener('pagehide', () => { opened = false; cancel(); clearInterval(timer); clearTimeout(noticeTimer); clearInterval(confirmationTimer); });
-        trigger.hidden = !!document.pointerLockElement;
+        window.addEventListener('pagehide', () => { opened = false; cancel(); clearInterval(timer); clearTimeout(noticeTimer); clearInterval(confirmationTimer); clearTimeout(updateTimer); });
+        ready = true;
+        syncToolbar();
+        announceLocalUpdate();
+        checkUpdates();
+        if (!document.body.hasAttribute('tabindex')) document.body.tabIndex = -1;
+        focusGameDocument();
+        window.addEventListener('pageshow', focusGameDocument);
+        window.addEventListener('load', focusGameDocument, { once: true });
+        if (pendingMenuToggle) { pendingMenuToggle = false; show(); }
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
     else init();
