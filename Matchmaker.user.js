@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name Glorp Matchmaker
 // @namespace local.glorp.matchmaker
-// @version 1.2.0
+// @version 1.2.2
+// @updateURL https://raw.githubusercontent.com/BaxterCash/Krunker-Matchmaker/main/Matchmaker.user.js
+// @downloadURL https://raw.githubusercontent.com/BaxterCash/Krunker-Matchmaker/main/Matchmaker.user.js
 // @description Krunker Matchmaker (F2)
 // @match https://krunker.io/*
 // @run-at document-start
@@ -17,7 +19,7 @@
     if (window[INSTANCE]) return;
     window[INSTANCE] = true;
 
-    const VERSION = '1.1.3';
+    const VERSION = '1.2.2';
     const UPDATE_REPO = 'BaxterCash/Krunker-Matchmaker';
     const API = 'https://matchmaker.krunker.io/';
     const KEY = 'glorp_matchmaker_v1';
@@ -133,6 +135,13 @@
     const controls = {};
     let activeJob = null, autoPollTimer;
     let autoRound = {lobby:null, positive:false, lastPositive:0, dueAt:0, fired:false};
+    let autoPermit=null;
+    const actionKeysDown=new Set(), switchEvents=[];
+    function recordSwitch(source,action,reason='') {
+        switchEvents.push({at:Date.now(),source,action,reason});
+        if(switchEvents.length>20)switchEvents.shift();
+    }
+    window.GlorpMatchmaker=Object.freeze({version:VERSION,diagnostics:Object.freeze({snapshot:()=>switchEvents.map(event=>({...event}))})});
 
     const latency = new Map(), regionLatency = new Map();
     let officialPingObject=null;
@@ -289,6 +298,12 @@
             if (opened) close(); else show(); return;
         }
         if (!ready) return;
+        // Script-generated key events cannot authorize navigation. One physical
+        // press is one action, even if a client repeats keydown without repeat.
+        if(event.isTrusted===false)return;
+        const physicalKey=event.code||event.key;
+        if(actionKeysDown.has(physicalKey))return;
+        if(key===controls.autoKey.value || key===controls.switchKey.value) actionKeysDown.add(physicalKey);
         if (controls.autoKey.value && key === controls.autoKey.value) {
             event.preventDefault(); event.stopImmediatePropagation();
             controls.autoSwitch.checked = !controls.autoSwitch.checked; save(); syncHUD(); configureAutoSwitch(); return;
@@ -301,12 +316,14 @@
         }
     }, true);
     window.addEventListener('keyup', event => {
+        actionKeysDown.delete(event.code||event.key);
         if (!ready || !recordingKey || !pendingModifier || !/^(?:Control|Alt|Shift|Meta)(?:Left|Right)?$/.test(event.code || event.key)) return;
         event.preventDefault(); event.stopImmediatePropagation();
         const key = pendingModifier; pendingModifier = null;
         if (['menuKey', 'switchKey', 'autoKey'].some(other => other !== recordingKey && controls[other].value === key)) { root.querySelector('#bindError').textContent = 'That key is already assigned.'; return; }
         controls[recordingKey].value = key; recordingKey = false; root.querySelector('#bindError').textContent = ''; syncShortcut(); save();
     }, true);
+    window.addEventListener('blur',()=>{actionKeysDown.clear();if(!ready)return;if(settings.autoSwitch||activeJob?.automatic)disarmAuto();if(busy==='quick'){recordSwitch('manual','cancel','focus lost');cancel();hideNotice();}});
     function syncToolbar() {
         if (!root) return;
         root.querySelector('#toolbar').hidden = !!document.pointerLockElement;
@@ -376,24 +393,16 @@
         } catch { /* no retries, downloads, or interruption on offline/rate-limit errors */ }
         finally { clearTimeout(timeout); }
     }
-    function announceLocalUpdate() {
+    function announceScriptUpdate(storageKey, title, node) {
         try {
-            const key = 'glorp_matchmaker_installed_version';
-            let until = Number(sessionStorage.getItem('glorp_matchmaker_updated_until')) || 0;
-            if (localStorage.getItem(key) !== VERSION) {
-                localStorage.setItem(key, VERSION);
-                until = Date.now() + 5000;
-                sessionStorage.setItem('glorp_matchmaker_updated_until', String(until));
-            }
-            if (until <= Date.now()) return;
-            const toast = root.querySelector('#updatedNotice');
-            toast.textContent = 'UPDATED · ' + VERSION; toast.hidden = false;
-            updateTimer = setTimeout(() => {
-                toast.hidden = true;
-                try { sessionStorage.removeItem('glorp_matchmaker_updated_until'); } catch { /* optional */ }
-            }, Math.min(5000, until - Date.now()));
-        } catch { /* a version announcement must never prevent startup */ }
+            const prior=localStorage.getItem(storageKey);
+            localStorage.setItem(storageKey,VERSION);
+            if(!prior || prior===VERSION) return;
+            node.textContent=title+' UPDATED · '+VERSION;node.hidden=false;
+            setTimeout(()=>{node.hidden=true;},5000);
+        }catch{}
     }
+    function announceLocalUpdate(){announceScriptUpdate('glorp_matchmaker_installed_version','MATCHMAKER',root.querySelector('#updatedNotice'));}
 
     // Accept extra fields/maps/modes; reject ambiguous counts and incompatible schemas.
     function parseGame(row) {
@@ -458,8 +467,6 @@
         let message = '';
         if (selected.maxPing && policy.fallback) message = policy.unavailable ? 'Ping data unavailable for these lobbies. Showing matches without ping limit.' : 'No lobbies under ' + selected.maxPing + ' ms. Showing matches without ping limit.';
         root.querySelector('#pingWarning').textContent = message;
-        root.querySelector('#pingHUD').textContent = message;
-        root.querySelector('#pingHUD').hidden = opened || !message;
         root.querySelector('#maxPing').title='0 = off. ~ means a measured region HTTPS estimate, not game-server RTT. Unknown data uses warned fallback; Auto Switch requires explicit fallback opt-in.';
     }
     function receiveMeasuredPing(event) {
@@ -529,6 +536,7 @@
         try { sessionStorage.setItem('glorp_matchmaker_notice_v1', JSON.stringify({ version: 2, info, id: game.id, until: Date.now() + noticeDuration() })); } catch { /* optional visual continuity */ }
     }
     async function navigateTo(game, job) {
+        if(!navigationStillAuthorized(job)){recordSwitch(job.automatic?'auto':'manual','cancel','round or lobby changed');cancel();return;}
         stopSearchUI();
         navigating = true;
         switchingTo(game);
@@ -539,13 +547,15 @@
             job.signal.addEventListener('abort', done, { once: true });
             if (job.signal.aborted) done();
         });
-        if (!active(job)) {
+        if (!active(job) || !navigationStillAuthorized(job)) {
             navigating = false; hideNotice();
+            if(active(job))cancel();
             try { sessionStorage.removeItem('glorp_matchmaker_notice_v1'); } catch { /* optional */ }
             return;
         }
         const destination = new URL('/', location.origin);
         destination.searchParams.set('game', game.id);
+        recordSwitch(job.automatic?'auto':'manual','navigate');
         try { location.assign(destination.href); } catch (error) { navigating = false; syncHUD(); throw error; }
     }
     function filters() {
@@ -625,7 +635,8 @@
         operation = new AbortController();
         busy = kind;
         panel.setAttribute('aria-busy', 'true');
-        activeJob = { token: generation, signal: operation.signal, background: kind === 'quick', automatic: false };
+        activeJob = { token: generation, signal: operation.signal, background: kind === 'quick', automatic: false,
+            originId:currentId(),originMap:currentActivity()?.map,originSeconds:readMatchTimer()?.seconds };
         return activeJob;
     }
     function active(job) { return (opened || job.background) && generation === job.token && !job.signal.aborted; }
@@ -765,6 +776,7 @@
         lastSearch = Date.now();
         const job = start(quick ? 'quick' : 'search');
         job.automatic = automatic;
+        job.autoPermit=automatic?autoPermit:null;
         if (quick) beginSearchUI(job, selected.searchDuration);
         games = []; fetchedAt = 0; visibleLimit = LIMIT;
         render();
@@ -851,6 +863,7 @@
     function quickSwitch(automatic = false) {
         if (busy === 'quick') { cancel(); render(); return; }
         if (navigating || busy) return;
+        recordSwitch(automatic?'auto':'manual','search');
         if (opened) close();
         refresh(true, automatic === true);
     }
@@ -886,7 +899,6 @@
         previousFocus = document.activeElement;
         opened = true;
         syncToolbar();
-        root.querySelector('#pingHUD').hidden = true;
         panel.hidden = false;
         trigger.setAttribute('aria-expanded', 'true');
         render();
@@ -907,7 +919,6 @@
         panel.querySelector('.window').inert = false;
         cancel();
         panel.hidden = true;
-        root.querySelector('#pingHUD').hidden = !root.querySelector('#pingHUD').textContent;
         trigger.setAttribute('aria-expanded', 'false');
         clearInterval(timer);
         for (const key of Object.keys(defaults)) controls[key].disabled = false;
@@ -930,7 +941,7 @@
             controls[id].textContent = recordingKey === key ? 'Press a key…' : keyLabel(controls[key].value);
         }
         const label = keyLabel(controls.switchKey.value);
-        root.querySelector('#autoAction').textContent='Enable Auto Switch 1 second after EoM'+(controls.autoKey.value?' ('+keyLabel(controls.autoKey.value)+')':'');
+        root.querySelector('#autoAction').textContent='Enable Auto Switch for this round'+(controls.autoKey.value?' ('+keyLabel(controls.autoKey.value)+')':'');
         controls.close.textContent='Close'+(controls.menuKey.value?' ('+keyLabel(controls.menuKey.value)+')':'')+' ×';
         controls.quick.textContent = (busy === 'quick' ? 'Cancel search' : 'Search lobbies') + (label === 'Off' ? '' : ' (' + label + ')');
         trigger.textContent = 'Matchmaker' + (controls.menuKey.value ? ' (' + keyLabel(controls.menuKey.value) + ')' : '');
@@ -943,7 +954,7 @@
             element.style.right='min('+Number(settings[id+'X'])+'px, calc(100vw - 40px))';
             element.style.top='min('+Number(settings[id+'Y'])+'px, calc(100vh - 40px))';
         };
-        for (const [selector,id] of [['#autoHUD','auto'],['#pingHUD','ping'],['#updatedNotice','updated'],['#trigger','button']]) place(root.querySelector(selector),id);
+        for (const [selector,id] of [['#autoHUD','auto'],['#updatedNotice','updated'],['#trigger','button']]) place(root.querySelector(selector),id);
         root.querySelector('#toolbar').style.cssText='top:0;right:0;min-width:0;min-height:0;padding:0;';
         trigger.style.position='fixed';
         place(notice,notice.dataset.success==='true'?'success':notice.dataset.error==='true'?'failure':'search');
@@ -952,9 +963,26 @@
     }
     function configureAutoSwitch() {
         clearInterval(autoPollTimer);
-        autoRound={lobby:currentId(),positive:false,lastPositive:0,dueAt:0,fired:false};
-        if (!settings.autoSwitch && activeJob?.automatic) { cancel(); render(); }
+        if(activeJob?.automatic) {cancel();hideNotice();render();}
+        autoPermit=null;
+        autoRound={lobby:currentId(),map:currentActivity()?.map,positive:false,lastPositive:0,dueAt:0,fired:false,lastSeconds:readMatchTimer()?.seconds};
         if (settings.autoSwitch) autoPollTimer=setInterval(checkAutoTimer,100);
+    }
+    function disarmAuto(cancelSearch=true) {
+        settings.autoSwitch=false;controls.autoSwitch.checked=false;save();syncHUD();
+        if(cancelSearch && activeJob?.automatic){recordSwitch('auto','cancel','round-end state lost');cancel();hideNotice();}
+        if(cancelSearch){autoPermit=null;clearInterval(autoPollTimer);}
+    }
+    function automaticStillAuthorized(permit) {
+        const timer=readMatchTimer(),map=currentActivity()?.map;
+        return !!permit && currentId()===permit.lobby && (!permit.map || !map || permit.map===map) && timer?.visible && timer.seconds===0;
+    }
+    function navigationStillAuthorized(job) {
+        if(job.automatic)return automaticStillAuthorized(job.autoPermit);
+        if(!job.background)return true;
+        const timer=readMatchTimer(),map=currentActivity()?.map;
+        return currentId()===job.originId && (!job.originMap || !map || job.originMap===map) &&
+            !(timer && Number.isFinite(job.originSeconds) && timer.seconds>job.originSeconds+10);
     }
     function readMatchTimer() {
         // Verified current Krunker HUD element; never read endTimer or scoreboard text.
@@ -964,18 +992,26 @@
         return match ? {seconds:Number(match[1])*60+Number(match[2]),visible:node.getClientRects().length>0 && getComputedStyle(node).visibility!=='hidden'} : null;
     }
     function checkAutoTimer() {
-        if (!settings.autoSwitch || navigating) return;
+        if(navigating)return;
+        if(activeJob?.automatic){if(!automaticStillAuthorized(activeJob.autoPermit))disarmAuto();return;}
+        if(!settings.autoSwitch){autoPermit=null;clearInterval(autoPollTimer);return;}
         const lobby=currentId(), now=Date.now(), timer=readMatchTimer();
-        if (!lobby || lobby!==autoRound.lobby) {autoRound={lobby,positive:false,lastPositive:0,dueAt:0,fired:false};return;}
+        const map=currentActivity()?.map;
+        if(!lobby || lobby!==autoRound.lobby || (map && autoRound.map && map!==autoRound.map) || !timer ||
+            (Number.isFinite(autoRound.lastSeconds) && timer.seconds>autoRound.lastSeconds+10)) {disarmAuto();return;}
+        autoRound.lastSeconds=timer.seconds;
         if (timer?.seconds>0 && timer.visible) {
-            // A new positive countdown rearms after a completed round.
-            if(autoRound.dueAt || autoRound.fired) autoRound={lobby,positive:false,lastPositive:0,dueAt:0,fired:false};
+            if(autoRound.dueAt || autoRound.fired){disarmAuto();return;}
             autoRound.positive=true;autoRound.lastPositive=now;return;
         }
+        if(timer.seconds===0 && (!timer.visible || !autoRound.positive || (!autoRound.dueAt && now-autoRound.lastPositive>2500))){disarmAuto();return;}
         if (timer?.seconds===0 && autoRound.positive && !autoRound.dueAt && !autoRound.fired && now-autoRound.lastPositive<=2500) autoRound.dueAt=now+1000;
         if (!autoRound.dueAt || autoRound.fired || now<autoRound.dueAt) return;
-        autoRound.fired=true; // Never defer a round-end trigger into a later game/search.
-        if (timer?.seconds>0 || busy || Date.now()-lastSearch<SEARCH_COOLDOWN) return;
+        autoRound.fired=true;
+        autoPermit={lobby,map};
+        // Consume the user's permission before searching, even if no lobby is found.
+        disarmAuto(false);
+        if (!automaticStillAuthorized(autoPermit) || busy || Date.now()-lastSearch<SEARCH_COOLDOWN) {autoPermit=null;return;}
         quickSwitch(true);
     }
     function syncSliders() {
@@ -1078,8 +1114,7 @@
           #autoPreview,#autoHUD { color:var(--auto-color,#00FFFF); opacity:var(--auto-opacity,1); } #searchPreview { color:var(--search-color,#FFFFFF); opacity:var(--search-opacity,1); }
           #autoHUD { position:fixed; right:18px; top:28px; font:16px/1.5 gamefont,GameFont,sans-serif; pointer-events:none; text-shadow:1px 2px #000; }
           #updatedNotice { top:52px; }
-          #pingWarning { margin:0 14px 12px; } #pingWarning:empty { display:none; } #pingWarning,#pingHUD { color:#ffa326; font:11px/1.6 gamefont,GameFont,sans-serif; }
-          #pingHUD { position:fixed; top:220px; right:18px; max-width:440px; text-align:right; pointer-events:none; text-shadow:1px 2px #000; }
+          #pingWarning { margin:0 14px 12px; } #pingWarning:empty { display:none; } #pingWarning { color:#ffa326; font:11px/1.6 gamefont,GameFont,sans-serif; }
           .selectors { gap:10px; } .choices,#maps { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); max-height:190px; gap:10px; padding:12px 14px 18px; }
           .choice { padding:8px 10px; min-height:44px; line-height:1.6; } #modes { grid-template-columns:repeat(auto-fill,minmax(165px,1fr)); }
           .selector > summary { padding:10px 14px; }
@@ -1101,7 +1136,7 @@
           @media(max-width:580px) { .body {padding:14px;} .lobby {gap:7px;} .counts {font-size:10px;} .limits {grid-template-columns:1fr;} }
         </style>
         <div id="toolbar"><button id="trigger" type="button" aria-label="Open Glorp Matchmaker" aria-expanded="false">Matchmaker · F2</button><a id="updateAvailable" hidden target="_blank" rel="noopener noreferrer">Update available</a></div>
-        <div id="autoHUD" hidden>AUTO-SWITCH</div><div id="pingHUD" hidden role="status"></div>
+        <div id="autoHUD" hidden>AUTO-SWITCH</div>
         <div id="updatedNotice" hidden role="status" aria-live="polite"></div>
         <div id="notice" hidden role="status" aria-live="polite"><strong></strong></div>
         <div id="panel" hidden>
