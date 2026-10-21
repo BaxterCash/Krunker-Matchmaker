@@ -1,6 +1,6 @@
 # Krunker Matchmaker
 
-Glorp userscript, version **1.2.0**. Put `Matchmaker.user.js` in `Documents/glorp/scripts` and enable Userscripts. Keep one copy; keep backups outside that folder.
+Glorp userscript, put `Matchmaker.user.js` in `glorp/scripts` and enable Userscripts. Keep one copy; keep backups outside that folder.
 
 ## Controls
 
